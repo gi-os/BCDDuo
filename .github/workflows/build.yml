@@ -1,6 +1,11 @@
 name: build
 on:
   workflow_dispatch:
+    inputs:
+      force_profiles:
+        description: Remake the profiles (after changing a capability on an App ID)
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -41,6 +46,7 @@ jobs:
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
       MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_AUTH }}
+      MATCH_FORCE: ${{ inputs.force_profiles }}
     steps:
       - uses: actions/checkout@v4
 

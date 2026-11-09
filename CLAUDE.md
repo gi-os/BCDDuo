@@ -7,9 +7,11 @@ with no PC, for Giovanni's iPhone Duo. Personal sideload only, same shape as Liq
 - `scripts/patch.sh`   job `ipa`, no secrets: fetches the pinned release (`TAG` + `SHA256`), raises the app's
   linked SDK to 27.1 so it fills the inner display, swaps the bundle IDs to `com.gios.bcd*`, bumps
   `CFBundleVersion` per run. To update BCD, change `TAG` and `SHA256`.
-- `fastlane/Fastfile` + `scripts/sign.sh`   job `sign`: registers the three App IDs, enables the memory
-  capabilities, makes development profiles (match, gi-os/ios-certs) and signs. Development because JIT needs
-  `get-task-allow`. It runs no third-party code.
+- `fastlane/Fastfile` + `scripts/sign.sh`   job `sign`: registers the three App IDs, makes development
+  profiles (match, gi-os/ios-certs) and signs. Development because JIT needs `get-task-allow`. It runs no
+  third-party code. Apple's API can't enable Increased Memory Limit or Extended Virtual Addressing: they're
+  set by hand on App ID `com.gios.bcd`, then `gh workflow run build.yml -f force_profiles=true` remakes the
+  profiles. Without them the app installs but Memory+ stays off, and `sign` logs a warning.
 - `scripts/install_link.sh [run-id] [minutes]`   on the Mac mini: decrypts a run's `BCD-development` artifact
   and serves a tap-to-install link. Serve from a renamed copy, because other sessions `pkill -f install_link.sh`.
 

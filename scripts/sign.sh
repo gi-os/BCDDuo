@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Usage: sign.sh <in.ipa> <out.ipa> <identity> <app profile> <JIT helper profile> <memory host profile>
+# Usage: SIGN_IDENTITY=<identity> sign.sh <in.ipa> <out.ipa> <app profile> <JIT helper profile> <memory host profile>
 #
 # Development-signs the patched IPA. Run by the sign job, which holds the signing secrets, so it only ever
 # reads the third-party bundle: nothing in it is executed. By hand rather than fastlane's resign because
 # BCD keeps libraries outside Frameworks/ (gl/, d3d12/), and those have to be re-signed too.
 set -euo pipefail
-IN="$1"; OUT="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; ID="$3"
-APP_PROFILE="$4"; JIT_PROFILE="$5"; MEMORY_PROFILE="$6"
+IN="$1"; OUT="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; ID="$SIGN_IDENTITY"
+APP_PROFILE="$3"; JIT_PROFILE="$4"; MEMORY_PROFILE="$5"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 PB=/usr/libexec/PlistBuddy
 

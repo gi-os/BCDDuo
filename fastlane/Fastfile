@@ -7,7 +7,6 @@ default_platform(:ios)
 APP = "com.gios.bcd"
 # scripts/sign.sh takes the profiles in this order.
 IDS = { APP => "BCD", "#{APP}.JITHelper" => "BCD JIT Helper", "#{APP}.MemoryHost" => "BCD Memory Host" }
-CAPABILITIES = %w[INCREASED_MEMORY_LIMIT EXTENDED_VIRTUAL_ADDRESSING]
 ROOT = File.expand_path("..", __dir__)
 
 platform :ios do
@@ -21,20 +20,9 @@ platform :ios do
       UI.success("Registered bundle ID #{id}")
     end
 
-    # A profile only carries the capabilities its App ID had when it was made, so adding one remakes it.
-    app = Spaceship::ConnectAPI::BundleId.find(APP)
-    enabled = app.get_capabilities
-    added = false
-    CAPABILITIES.reject { |c| enabled.any? { |e| e.is_type?(c) } }.each do |c|
-      begin
-        app.create_capability(c)
-        added = true
-        UI.success("Enabled #{c}")
-      rescue => e
-        UI.important("Couldn't enable #{c}: #{e.message}")
-      end
-    end
-
+    # Apple's API can't enable Increased Memory Limit or Extended Virtual Addressing, so they're turned on
+    # by hand on the App ID. A profile only carries what its App ID had when it was made, so after that,
+    # run this workflow once with force_profiles.
     setup_ci
     match(
       type: "development",
@@ -44,11 +32,12 @@ platform :ios do
       api_key: api_key,
       readonly: false,
       force_for_new_devices: true,
-      force: added
+      force: ENV["MATCH_FORCE"] == "true"
     )
 
+    # In the environment, not the arguments: fastlane logs the command, and the repo's logs are public.
+    ENV["SIGN_IDENTITY"] = ENV["sigh_#{APP}_development_certificate-name"]
     sh(File.join(ROOT, "scripts/sign.sh"), File.join(ROOT, "out/unsigned.ipa"), File.join(ROOT, "out/BCD.ipa"),
-       ENV["sigh_#{APP}_development_certificate-name"],
-       *IDS.keys.map { |id| ENV["sigh_#{id}_development_profile-path"] }, log: false)
+       *IDS.keys.map { |id| ENV["sigh_#{id}_development_profile-path"] })
   end
 end
