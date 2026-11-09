@@ -1,0 +1,54 @@
+# Development signing for Giovanni's own devices: run by the workflow's sign job, which alone gets the
+# signing secrets (App Store Connect key, match password); no third-party code runs there. Development,
+# not ad-hoc, because BCD's JIT needs get-task-allow. Certificates come from gi-os/ios-certs (match), as
+# for the kit's apps.
+default_platform(:ios)
+
+APP = "com.gios.bcd"
+# scripts/sign.sh takes the profiles in this order.
+IDS = { APP => "BCD", "#{APP}.JITHelper" => "BCD JIT Helper", "#{APP}.MemoryHost" => "BCD Memory Host" }
+CAPABILITIES = %w[INCREASED_MEMORY_LIMIT EXTENDED_VIRTUAL_ADDRESSING]
+ROOT = File.expand_path("..", __dir__)
+
+platform :ios do
+  # Signs out/unsigned.ipa into out/BCD.ipa.
+  lane :dev do
+    api_key = app_store_connect_api_key(key_id: ENV["ASC_KEY_ID"], issuer_id: ENV["ASC_ISSUER_ID"], key_content: ENV["ASC_KEY_P8"], in_house: false)
+
+    IDS.each do |id, name|
+      next if Spaceship::ConnectAPI::BundleId.find(id)
+      Spaceship::ConnectAPI::BundleId.create(name: name, identifier: id, platform: "IOS")
+      UI.success("Registered bundle ID #{id}")
+    end
+
+    # A profile only carries the capabilities its App ID had when it was made, so adding one remakes it.
+    app = Spaceship::ConnectAPI::BundleId.find(APP)
+    enabled = app.get_capabilities
+    added = false
+    CAPABILITIES.reject { |c| enabled.any? { |e| e.is_type?(c) } }.each do |c|
+      begin
+        app.create_capability(c)
+        added = true
+        UI.success("Enabled #{c}")
+      rescue => e
+        UI.important("Couldn't enable #{c}: #{e.message}")
+      end
+    end
+
+    setup_ci
+    match(
+      type: "development",
+      app_identifier: IDS.keys,
+      git_url: "https://github.com/gi-os/ios-certs.git",
+      storage_mode: "git",
+      api_key: api_key,
+      readonly: false,
+      force_for_new_devices: true,
+      force: added
+    )
+
+    sh(File.join(ROOT, "scripts/sign.sh"), File.join(ROOT, "out/unsigned.ipa"), File.join(ROOT, "out/BCD.ipa"),
+       ENV["sigh_#{APP}_development_certificate-name"],
+       *IDS.keys.map { |id| ENV["sigh_#{id}_development_profile-path"] }, log: false)
+  end
+end

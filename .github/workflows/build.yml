@@ -1,0 +1,82 @@
+name: build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  # Fetches BCD's release IPA and patches it. Handles a stranger's IPA, so it gets no secrets.
+  ipa:
+    runs-on: macos-26
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch
+        run: scripts/patch.sh out/unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: BCD-unsigned
+          path: out/unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0  # an IPA is already a zip
+          retention-days: 1
+
+  # Development-signs it for the devices registered in the developer account (fastlane/Fastfile). JIT
+  # needs get-task-allow, which only development profiles carry, so this can't be ad-hoc like LiquidTok.
+  sign:
+    needs: ipa
+    runs-on: macos-26
+    permissions:
+      contents: read
+      actions: write
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_AUTH }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: BCD-unsigned
+          path: out
+
+      - name: Sign
+        run: |
+          command -v fastlane >/dev/null || brew install fastlane
+          fastlane dev
+
+      # The repo is public, so the signed IPA (it carries the profile, with the devices in it) goes up
+      # encrypted to the Mac mini: a one-time key, itself encrypted to artifact-key.pub.pem, whose private
+      # half only ~/.config/liquidbird/artifact-key.pem there has (scripts/install_link.sh).
+      - name: Encrypt for the Mac mini
+        run: |
+          export LB_KEY="$(/usr/bin/openssl rand -hex 32)"
+          printf '%s' "$LB_KEY" | /usr/bin/openssl pkeyutl -encrypt -pubin -inkey artifact-key.pub.pem \
+            -pkeyopt rsa_padding_mode:oaep -out out/BCD.key.enc
+          /usr/bin/openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:LB_KEY \
+            -in out/BCD.ipa -out out/BCD.ipa.enc
+          rm out/BCD.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BCD-development
+          path: |
+            out/BCD.ipa.enc
+            out/BCD.key.enc
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Delete the unsigned artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ needs.ipa.outputs.artifact }}"
