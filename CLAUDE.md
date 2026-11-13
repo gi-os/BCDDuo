@@ -7,6 +7,11 @@ with no PC, for Giovanni's iPhone Duo. Personal sideload only, same shape as Liq
 - `scripts/patch.sh`   job `ipa`, no secrets: fetches the pinned release (`TAG` + `SHA256`), raises the app's
   linked SDK to 27.1 so it fills the inner display, swaps the bundle IDs to `com.gios.bcd*`, bumps
   `CFBundleVersion` per run. To update BCD, change `TAG` and `SHA256`.
+- `bridge/JoyCon2Bridge.m` + `scripts/add_dylib.py`   branch `joycon2` only, until it has been tried on the
+  phone: a library `patch.sh` builds and makes BCD load, which connects Joy-Con 2 over Bluetooth LE and shows
+  BCD one virtual controller. Build it with `gh workflow run build.yml --ref joycon2`. `main` stays plain BCD.
+  To connect a Joy-Con, hold its sync button; it writes nothing to the Joy-Con, so it stays paired to the
+  Switch 2. Its log lines start `[joycon2]`.
 - `fastlane/Fastfile` + `scripts/sign.sh`   job `sign`: registers the three App IDs, makes development
   profiles (match, gi-os/ios-certs) and signs. Development because JIT needs `get-task-allow`. It runs no
   third-party code. Apple's API can't enable Increased Memory Limit or Extended Virtual Addressing: they're
