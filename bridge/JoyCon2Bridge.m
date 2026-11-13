@@ -8,7 +8,7 @@
 // Nadeflore/switch2-controllers (controller.py). Nothing is written to the Joy-Con's pairing memory: it
 // stays paired to the console. To connect, hold the Joy-Con's sync button until its lights run.
 //
-// UNTESTED ON HARDWARE as of the commit that added it.
+// Buttons and sticks confirmed working on an iPhone Duo with BCD 0.1.653 (2026-11-13).
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
@@ -26,7 +26,11 @@ enum {   // input report button bits (little-endian u32 at offset 4)
   kMinus = 1u << 8, kPlus = 1u << 9, kRStick = 1u << 10, kLStick = 1u << 11, kHome = 1u << 12,
   kDown = 1u << 16, kUp = 1u << 17, kRight = 1u << 18, kLeft = 1u << 19, kL = 1u << 22, kZL = 1u << 23,
 };
-static const float kStickRange = 1450;   // raw counts from centre to edge, a little inside the real travel
+// Stick calibration in the Joy-Con's memory: 9 bytes, three 12-bit pairs (centre, travel above it, travel
+// below it). The user's calibration is all ff when the stick was never recalibrated on a console.
+enum { kUserCalibration = 0x1fc042, kFactoryCalibration = 0x0130a8, kCalibrationLength = 0x0b };
+static const float kFallbackRange = 1100;   // counts from centre to edge until the calibration is read
+static const float kOuterMargin = 0.93f;    // full deflection a little before the mechanical edge
 static const float kDeadzone = 0.08f;
 
 static GCController *gVirtual;   // main thread only; non-nil while a Joy-Con is connected
@@ -41,9 +45,10 @@ static NSArray<GCController *> *JCControllers(id self, SEL _cmd) {
 @interface JCSide : NSObject
 @property(nonatomic, strong) CBPeripheral *peripheral;
 @property(nonatomic, strong) CBCharacteristic *command;
-@property(nonatomic) BOOL live, centred;
+@property(nonatomic) BOOL live, centred, calibrated;
 @property(nonatomic) uint32_t buttons;
 @property(nonatomic) int cx, cy;
+@property(nonatomic) float maxX, maxY, minX, minY;   // travel each way from the centre, in raw counts
 @property(nonatomic) float x, y;
 @end
 @implementation JCSide
@@ -121,8 +126,49 @@ static NSArray<GCController *> *JCControllers(id self, SEL _cmd) {
       CBCharacteristicWriteType type = (c.properties & CBCharacteristicPropertyWriteWithoutResponse)
           ? CBCharacteristicWriteWithoutResponse : CBCharacteristicWriteWithResponse;
       [peripheral writeValue:[NSData dataWithBytes:led length:sizeof led] forCharacteristic:c type:type];
+      // Once the response notification is on, ask for the stick calibration.
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{
+        [self read:kUserCalibration from:side];
+      });
     }
   }
+}
+
+// Memory read: command 0x02, subcommand 0x04, then length, 7e 00 00, address.
+- (void)read:(uint32_t)address from:(JCSide *)side {
+  CBCharacteristic *c = side.command;
+  if (!c || side.peripheral.state != CBPeripheralStateConnected) return;
+  const uint8_t read[] = {0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, kCalibrationLength, 0x7e, 0x00, 0x00,
+                          address & 0xff, address >> 8 & 0xff, address >> 16 & 0xff, address >> 24};
+  CBCharacteristicWriteType type = (c.properties & CBCharacteristicPropertyWriteWithoutResponse)
+      ? CBCharacteristicWriteWithoutResponse : CBCharacteristicWriteWithResponse;
+  [side.peripheral writeValue:[NSData dataWithBytes:read length:sizeof read] forCharacteristic:c type:type];
+}
+
+// The answer: an 8-byte header (command, 01 = ok), then length, 3 bytes, the address, the data.
+- (void)response:(NSData *)data from:(JCSide *)side {
+  const uint8_t *b = data.bytes;
+  if (data.length < 16 + 9 || b[0] != 0x02 || b[1] != 0x01) return;
+  uint32_t address = b[12] | b[13] << 8 | b[14] << 16 | (uint32_t)b[15] << 24;
+  const uint8_t *d = b + 16;
+  if (address == kUserCalibration && d[0] == 0xff && d[1] == 0xff && d[2] == 0xff) {
+    [self read:kFactoryCalibration from:side];
+    return;
+  }
+  if (address != kUserCalibration && address != kFactoryCalibration) return;
+  int v[6];
+  for (int i = 0; i < 3; i++) {
+    v[2 * i] = d[3 * i] | (d[3 * i + 1] & 0x0f) << 8;
+    v[2 * i + 1] = d[3 * i + 1] >> 4 | d[3 * i + 2] << 4;
+  }
+  // Sanity: a centre near the middle of 0...4095 and a travel that could be a stick's.
+  for (int i = 2; i < 6; i++) if (v[i] < 300 || v[i] > 2400) return;
+  if (abs(v[0] - 2048) > 700 || abs(v[1] - 2048) > 700) return;
+  side.cx = v[0]; side.cy = v[1]; side.centred = YES;
+  side.maxX = v[2]; side.maxY = v[3]; side.minX = v[4]; side.minY = v[5];
+  side.calibrated = YES;
+  JCLog(@"%@ stick calibration (%s): centre %d,%d up %d,%d down %d,%d", side == _left ? @"left" : @"right",
+        address == kUserCalibration ? "user" : "factory", v[0], v[1], v[2], v[3], v[4], v[5]);
 }
 
 // Input report 0x05 without its report ID: buttons u32 at 4, left stick at 10, right stick at 13
@@ -130,16 +176,19 @@ static NSArray<GCController *> *JCControllers(id self, SEL _cmd) {
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
   JCSide *side = [self sideFor:peripheral];
   NSData *data = characteristic.value;
-  if (!side || data.length < 16 || ![characteristic.UUID isEqual:[CBUUID UUIDWithString:kInputUUID]]) return;
+  if (!side) return;
+  if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:kResponseUUID]]) { [self response:data from:side]; return; }
+  if (data.length < 16 || ![characteristic.UUID isEqual:[CBUUID UUIDWithString:kInputUUID]]) return;
   const uint8_t *b = data.bytes;
   const uint8_t *s = b + (side == _left ? 10 : 13);
   int rx = s[0] | (s[1] & 0x0f) << 8, ry = s[1] >> 4 | s[2] << 4;
-  if (!side.centred) {   // the stick is at rest when the Joy-Con connects: that reading is its centre
+  if (!side.centred) {   // until the calibration arrives: the stick is at rest when the Joy-Con connects
     side.cx = rx; side.cy = ry; side.centred = YES;
   }
   side.buttons = b[4] | b[5] << 8 | b[6] << 16 | (uint32_t)b[7] << 24;
-  side.x = [self axis:rx - side.cx];
-  side.y = [self axis:ry - side.cy];
+  BOOL cal = side.calibrated;
+  side.x = [self axis:rx - side.cx up:cal ? side.maxX : kFallbackRange down:cal ? side.minX : kFallbackRange];
+  side.y = [self axis:ry - side.cy up:cal ? side.maxY : kFallbackRange down:cal ? side.minY : kFallbackRange];
   if (!side.live) {
     side.live = YES;
     JCLog(@"%@ Joy-Con 2 is sending input", side == _left ? @"left" : @"right");
@@ -147,10 +196,13 @@ static NSArray<GCController *> *JCControllers(id self, SEL _cmd) {
   [self publish];
 }
 
-- (float)axis:(int)raw {
-  float v = raw / kStickRange;
-  if (fabsf(v) < kDeadzone) return 0;
-  return fmaxf(-1, fminf(1, v));
+// -1...1 from a raw offset: full at kOuterMargin of the travel, zero inside the dead zone, linear between.
+- (float)axis:(int)raw up:(float)up down:(float)down {
+  float v = raw / ((raw >= 0 ? up : down) * kOuterMargin);
+  float size = fabsf(v);
+  if (size < kDeadzone) return 0;
+  size = fminf(1, (size - kDeadzone) / (1 - kDeadzone));
+  return v < 0 ? -size : size;
 }
 
 - (void)publish {
@@ -189,7 +241,7 @@ static NSArray<GCController *> *JCControllers(id self, SEL _cmd) {
   JCSide *side = [self sideFor:peripheral];
   if (!side) return;
   JCLog(@"%@ Joy-Con 2 gone: %@", side == _left ? @"left" : @"right", error.localizedDescription ?: @"disconnected");
-  side.peripheral = nil; side.command = nil; side.live = NO; side.centred = NO; side.buttons = 0;
+  side.peripheral = nil; side.command = nil; side.live = NO; side.centred = NO; side.calibrated = NO; side.buttons = 0;
   [self publish];
   [self scan];
 }
