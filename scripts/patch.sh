@@ -6,8 +6,8 @@
 # the full-edge layout (Apple's "Prepare your app for iPhone Duo"; same technique as LiquidTok's
 # patch_duo.sh). Only the app's binary: the two extensions show no UI. Every bundle also gets our own ID.
 set -euo pipefail
-TAG=v0.1.634
-SHA256=8bdbab38e99c52ad38f1ff67840119b9aa3bd9986082900d80fb30d49885c292   # a stranger's release: pinned
+TAG=v0.1.653
+SHA256=a19306da887f4849043e56c498fa61caa59a2c14e6bff66394433f8221dd362b   # a stranger's release: pinned
 UPSTREAM=com.thebcd69.bcd
 PREFIX=com.gios.bcd
 TARGET=27.1
